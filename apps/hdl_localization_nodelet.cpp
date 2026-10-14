@@ -52,6 +52,7 @@ public:
 
     robot_odom_frame_id = private_nh.param<std::string>("robot_odom_frame_id", "robot_odom");
     odom_child_frame_id = private_nh.param<std::string>("odom_child_frame_id", "base_link");
+    odom_stamp_offset = private_nh.param<double>("odom_stamp_offset", 0.25);
 
     use_imu = private_nh.param<bool>("use_imu", true);
     invert_acc = private_nh.param<bool>("invert_acc", false);
@@ -412,14 +413,14 @@ private:
 
       geometry_msgs::TransformStamped odom_trans;
       odom_trans.transform = tf2::toMsg(odom_wrt_map);
-      odom_trans.header.stamp = stamp;
+      odom_trans.header.stamp = stamp + ros::Duration(odom_stamp_offset);
       odom_trans.header.frame_id = "map";
       odom_trans.child_frame_id = robot_odom_frame_id;
 
       tf_broadcaster.sendTransform(odom_trans);
     } else {
       geometry_msgs::TransformStamped odom_trans = tf2::eigenToTransform(Eigen::Isometry3d(pose.cast<double>()));
-      odom_trans.header.stamp = stamp;
+      odom_trans.header.stamp = stamp + ros::Duration(odom_stamp_offset);
       odom_trans.header.frame_id = "map";
       odom_trans.child_frame_id = odom_child_frame_id;
       tf_broadcaster.sendTransform(odom_trans);
@@ -450,7 +451,7 @@ private:
     status.matching_error = 0.0;
 
     const double max_correspondence_dist = private_nh.param<double>("status_max_correspondence_dist", 0.5);
-    const double max_valid_point_dist = private_nh.param<double>("status_max_valid_point_dist", 25.0);
+    const double max_valid_point_dist = private_nh.param<double>("status_max_valid_point_dist", 100.0);
 
     int num_inliers = 0;
     int num_valid_points = 0;
@@ -470,7 +471,24 @@ private:
       }
     }
 
-    status.matching_error /= num_inliers;
+    // --- DEBUG ---
+    // NODELET_INFO_STREAM(
+    //   "[scan_matching_status] "
+    //   << "aligned_size=" << aligned->size() << "\n"
+    //   << " num_valid_points=" << num_valid_points << "\n"
+    //   << " num_inliers=" << num_inliers << "\n"
+    //   << " raw_error_sum=" << status.matching_error << "\n"
+    //   << " max_valid_point_dist=" << max_valid_point_dist << "\n"
+    //   << " max_correspondence_dist=" << max_correspondence_dist << "\n"
+    //   << " ndt_converged=" << registration->hasConverged() << "\n"
+    //   << " final_transform_translation="
+    //   << registration->getFinalTransformation()(0,3) << ","
+    //   << registration->getFinalTransformation()(1,3) << ","
+    //   << registration->getFinalTransformation()(2,3));
+    // --- END DEBUG ---
+
+    // Guard against 0/0 
+    status.matching_error = (num_inliers > 0) ? (status.matching_error / num_inliers) : 0.0;
     status.inlier_fraction = static_cast<float>(num_inliers) / std::max(1, num_valid_points);
     status.relative_pose = tf2::eigenToTransform(Eigen::Isometry3d(registration->getFinalTransformation().cast<double>())).transform;
 
@@ -508,6 +526,7 @@ private:
 
   std::string robot_odom_frame_id;
   std::string odom_child_frame_id;
+  double odom_stamp_offset;
 
   bool use_imu;
   bool invert_acc;
