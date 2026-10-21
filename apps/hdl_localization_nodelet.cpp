@@ -221,6 +221,9 @@ private:
     std::lock_guard<std::mutex> estimator_lock(pose_estimator_mutex);
     if(!pose_estimator) {
       NODELET_ERROR("waiting for initial pose input!!");
+      // drop stale imu data so it is not integrated once the initial pose arrives
+      std::lock_guard<std::mutex> lock(imu_data_mutex);
+      imu_data.clear();
       return;
     }
     Eigen::Matrix4f before = pose_estimator->matrix();
@@ -361,6 +364,11 @@ private:
     std::lock_guard<std::mutex> lock(pose_estimator_mutex);
     const auto& p = pose_msg->pose.pose.position;
     const auto& q = pose_msg->pose.pose.orientation;
+    {
+      // imu data received before the new initial pose must not be integrated into it
+      std::lock_guard<std::mutex> imu_lock(imu_data_mutex);
+      imu_data.clear();
+    }
     pose_estimator.reset(
           new hdl_localization::PoseEstimator(
             registration,
@@ -457,14 +465,23 @@ private:
     int num_valid_points = 0;
     std::vector<int> k_indices;
     std::vector<float> k_sq_dists;
+    const Eigen::Vector3f sensor_pos = registration->getFinalTransformation().block<3, 1>(0, 3);
+
     for(int i = 0; i < aligned->size(); i++) {
       const auto& pt = aligned->at(i);
-      if (pt.getVector3fMap().norm() > max_valid_point_dist) {
+      const Eigen::Vector3f p = pt.getVector3fMap();
+
+      if (!p.allFinite()) {
+        continue;
+      }
+      if ((p - sensor_pos).norm() > max_valid_point_dist) {   // distance from robot, not map origin
         continue;
       }
       num_valid_points++;
 
-      registration->getSearchMethodTarget()->nearestKSearch(pt, 1, k_indices, k_sq_dists);
+      if (registration->getSearchMethodTarget()->nearestKSearch(pt, 1, k_indices, k_sq_dists) < 1) {
+        continue;
+      }
       if(k_sq_dists[0] < max_correspondence_dist * max_correspondence_dist) {
         status.matching_error += k_sq_dists[0];
         num_inliers++;
